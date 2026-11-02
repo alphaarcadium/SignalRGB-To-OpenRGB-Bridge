@@ -1,4 +1,58 @@
-import tcp from "@SignalRGB/tcp";
+import { udp } from "@SignalRGB/udp";
+
+// OpenRGB Bridge fallback for SignalRGB builds missing @SignalRGB/tcp in
+// per-device rendering. Requires the local OpenRGB-SignalRGB-Relay.exe helper.
+const BRIDGE_UDP_RELAY_HOST = "127.0.0.1";
+const BRIDGE_UDP_RELAY_PORT = 9730;
+let bridgeSocketCounter = 0;
+
+class OpenRGBUdpProxySocket {
+    constructor() {
+        this.id = "openrgb-" + Date.now() + "-" + (++bridgeSocketCounter) + "-" + Math.floor(Math.random() * 100000);
+        this.handlers = {};
+        this.closed = false;
+        this.transport = udp.createSocket();
+        const self = this;
+        this.transport.on("message", function(raw) {
+            if (self.closed) return;
+            try {
+                // UDP module returns bytes on some SignalRGB versions and text on others.
+                const text = typeof raw === "string" ? raw : bytesToString(normalizeBytes(raw));
+                const packet = JSON.parse(text);
+                if (packet.id !== self.id) return;
+                if (packet.event === "connection") self.emit("connection");
+                else if (packet.event === "message") self.emit("message", packet.data || []);
+                else if (packet.event === "error") self.emit("error", packet.error || "Local relay error");
+                else if (packet.event === "close") self.emit("close");
+            } catch (error) {
+                // Ignore unrelated/invalid datagrams rather than interrupt lighting.
+            }
+        });
+        this.transport.on("error", function(error) {
+            if (!self.closed) self.emit("error", String(error));
+        });
+    }
+    on(name, handler) { this.handlers[name] = handler; }
+    emit(name, value) {
+        if (typeof this.handlers[name] === "function") this.handlers[name](value);
+    }
+    dispatch(message) {
+        if (this.closed) return;
+        this.transport.write(JSON.stringify(Object.assign({ id: this.id }, message)), BRIDGE_UDP_RELAY_HOST, BRIDGE_UDP_RELAY_PORT);
+    }
+    connect(host, port) { this.dispatch({ op: "connect", host: String(host), port: Number(port) }); }
+    send(data) { this.dispatch({ op: "send", data: normalizeBytes(data) }); }
+    close() {
+        if (this.closed) return;
+        try { this.dispatch({ op: "close" }); } catch (error) { }
+        this.closed = true;
+        try { this.transport.close(); } catch (error) { }
+        this.emit("close");
+    }
+    disconnect() { this.close(); }
+}
+const tcp = { createSocket: function() { return new OpenRGBUdpProxySocket(); } };
+
 
 export function Name() { return "OpenRGB Bridge"; }
 export function Version() { return "2.0.2"; }
