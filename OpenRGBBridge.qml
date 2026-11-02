@@ -114,7 +114,7 @@ Item {
                 if (!obj) {
                     continue
                 }
-                if (String(obj.id || "") === statusControllerId || obj.bridgeStatusBus) {
+                if (String(obj.id || "") === statusControllerId) {
                     haveStatusBus = true
                     foundStatus = String(obj.bridgeStatus || "")
                     foundDeviceCatalog = String(obj.bridgeDevicesJson || "[]")
@@ -130,8 +130,42 @@ Item {
         }
         if (haveStatusBus) {
             updateDeviceModels(foundDeviceCatalog)
+            busy = statusBusBusy
+            return
         }
-        busy = haveStatusBus ? statusBusBusy : readBusy()
+
+        // SignalRGB 2.5.x can return native-function proxies for the
+        // DiscoveryService state methods. In that case inspect only real
+        // OpenRGB controllers, never unverified "bridge*" properties.
+        var registered = []
+        try {
+            var knownControllers = service.controllers || []
+            for (var k = 0; k < knownControllers.length; k++) {
+                var entry = knownControllers[k]
+                var item = entry ? entry.obj : null
+                if (!item || typeof item.deviceId !== "string" ||
+                        typeof item.openrgbIndex !== "number") {
+                    continue
+                }
+                registered.push({
+                    "deviceId": item.deviceId,
+                    "name": String(item.name || "OpenRGB Device"),
+                    "vendor": String(item.vendor || ""),
+                    "openrgbIndex": item.openrgbIndex,
+                    "ledCount": Number(item.ledCount || 0),
+                    "zoneCount": Number(item.zoneCount || 0),
+                    "icon": String(item.icon || item.image || ""),
+                    "bridgeDeleted": item.bridgeDeleted === true
+                })
+            }
+        } catch (e) {
+            // Don't break the interface when the controller list is changing.
+        }
+        if (registered.length > 0) {
+            updateDeviceModels(JSON.stringify(registered))
+            statusText = "OpenRGB controller(s) registered: " + registered.length
+        }
+        busy = false
     }
 
     function readBusy() {
