@@ -544,7 +544,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 130
                     height: 30
-                    opacity: busy || deletedCount === 0 ? 0.55 : 1
+                    opacity: busy ? 0.55 : 1
 
                     Rectangle {
                         anchors.fill: parent
@@ -554,7 +554,7 @@ Item {
 
                     ToolButton {
                         anchors.fill: parent
-                        enabled: !busy && deletedCount !== 0
+                        enabled: !busy
                         text: "Restore All"
                         font.family: "Poppins"
                         font.bold: true
