@@ -51,6 +51,7 @@ class BridgeHttpSocket {
             self.connected = true;
             self.emit("connection");
             self.schedulePoll(0);
+            self.pump();
             self.flushSend();
         });
     }
@@ -79,12 +80,12 @@ class BridgeHttpSocket {
     }
     schedulePoll(delay) {
         if (this.closed || !this.connected) return;
-        const self = this;
-        if (typeof setTimeout !== "function") {
-            this.emit("error","SignalRGB timer support unavailable in HTTP relay transport");
-            return;
-        }
-        this.pollTimer = setTimeout(function () {self.poll();}, delay);
+        this.nextPollAt = Date.now() + Math.max(0, Number(delay) || 0);
+    }
+    pump() {
+        if (this.closed || !this.connected || this.polling) return;
+        if (Date.now() < this.nextPollAt) return;
+        this.poll();
     }
     poll() {
         if (this.closed || !this.connected || this.polling) return;
@@ -213,6 +214,7 @@ export function Render() {
 	}
 
 	client.ensureConnected();
+	client.pump();
 
 	const stateKey = getRenderStateKey(controller);
 	const state = renderStates[stateKey] || buildSignalRgbLayout(controller);
@@ -296,6 +298,7 @@ export function DiscoveryService() {
 	this.Update = function () {
 		this.flushControllerSync();
 		if (this.client) {
+			this.client.pump();
 			this.client.checkRequestTimeouts();
 			return;
 		}
@@ -463,6 +466,7 @@ export function DiscoveryService() {
 
 	this.getStatus = function () {
 		if (this.client) {
+			this.client.pump();
 			this.client.checkRequestTimeouts();
 		}
 
@@ -473,6 +477,7 @@ export function DiscoveryService() {
 	// no-argument method result. Returning one JSON primitive keeps status, busy state,
 	// and the independent device catalogue consistent within a single UI refresh.
 	this.getUiState = function (pollToken) {
+		if (this.client) this.client.pump();
 		return JSON.stringify({
 			pollToken: String(pollToken === undefined ? "" : pollToken),
 			status: String(this.status || buildLookingForStatus()),
@@ -930,7 +935,12 @@ class OpenRGBClient {
 		}
 	}
 
-	ensureConnected() {
+	pump() {
+        if (this.socket && typeof this.socket.pump === "function") {
+            this.socket.pump();
+        }
+    }
+    ensureConnected() {
 		if (!this.connected && !this.connecting) {
 			this.connect();
 		}
