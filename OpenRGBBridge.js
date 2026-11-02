@@ -1380,6 +1380,29 @@ function buildSignalRgbLayout(controllerData) {
 		lastFrameSignature: ""
 	};
 
+    // Gigabyte RX 7900 XTX Gaming OC:
+    // Present one SignalRGB component instead of 5 zones.
+    // The existing frame normalization repeats this color
+    // across all 5 OpenRGB LED entries.
+    if (
+        String(controllerData.name || "").toLowerCase() ===
+        "gigabyte radeon rx 7900 xtx gaming oc"
+    ) {
+        state.ledPositions = [[0, 0]];
+
+        device.setSize([1, 1]);
+        device.setControllableLeds(
+            ["GPU RGB"],
+            [[0, 0]]
+        );
+
+        logFromDevice(
+            "Gigabyte RX 7900 XTX: unified RGB layout enabled."
+        );
+
+        return state;
+    }
+
 	if (zones.length > 1) {
 		let ledOffset = 0;
 		for (let zoneIndex = 0; zoneIndex < zones.length; zoneIndex++) {
