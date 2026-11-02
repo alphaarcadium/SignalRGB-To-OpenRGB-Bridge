@@ -1,4 +1,122 @@
-import tcp from "@SignalRGB/tcp";
+// Local HTTP-to-OpenRGB TCP socket compatibility layer.
+// This file intentionally uses NO @SignalRGB/tcp or @SignalRGB/udp imports.
+// Requires OpenRGB-HTTP-Relay.exe listening on http://127.0.0.1:9731.
+const HTTP_RELAY_BASE = "http://127.0.0.1:9731";
+let httpRelaySequence = 0;
+
+function bridgeHttpRequest(method, path, payload, done) {
+    let req;
+    try {
+        req = new XMLHttpRequest();
+        req.onreadystatechange = function () {
+            if (req.readyState !== 4) return;
+            let obj = {};
+            try { obj = JSON.parse(String(req.responseText || "{}")); }
+            catch (e) { done("Invalid localhost relay response: " + String(e)); return; }
+            if (req.status < 200 || req.status >= 300 || !obj.ok) {
+                done(String(obj.error || "HTTP relay error " + req.status));
+            } else {
+                done(null, obj);
+            }
+        };
+        req.onerror = function () { done("Cannot contact localhost OpenRGB HTTP relay"); };
+        req.open(method, HTTP_RELAY_BASE + path, true);
+        if (payload !== null) req.setRequestHeader("Content-Type", "application/json");
+        req.send(payload === null ? null : JSON.stringify(payload));
+    } catch (e) { done("SignalRGB XMLHttpRequest failed: " + String(e)); }
+}
+
+class BridgeHttpSocket {
+    constructor() {
+        this.id = "srgb-" + Date.now() + "-" + (++httpRelaySequence) + "-" + Math.floor(Math.random() * 1000000);
+        this.handlers = {};
+        this.closed = false;
+        this.connected = false;
+        this.sendQueue = [];
+        this.sending = false;
+        this.polling = false;
+        this.pollTimer = undefined;
+    }
+    on(event, handler) { this.handlers[event] = handler; }
+    emit(event, value) {
+        if (this.closed && event !== "close") return;
+        const fn = this.handlers[event];
+        if (typeof fn === "function") fn(value);
+    }
+    connect(host, port) {
+        const self = this;
+        bridgeHttpRequest("POST", "/open", {id:this.id, host:String(host),port:Number(port)}, function(err) {
+            if (self.closed) return;
+            if (err) { self.emit("error",err); return; }
+            self.connected = true;
+            self.emit("connection");
+            self.schedulePoll(0);
+            self.flushSend();
+        });
+    }
+    send(data) {
+        if (this.closed) return;
+        // Preserve ordering: OpenRGB requires commands to be written in sequence.
+        this.sendQueue.push(Array.from(data || []));
+        if (this.sendQueue.length > 80) {
+            // Prefer a clean error over building an unbounded backlog.
+            this.emit("error","Local relay send queue overflow");
+            return;
+        }
+        this.flushSend();
+    }
+    flushSend() {
+        if (this.closed || !this.connected || this.sending || this.sendQueue.length === 0) return;
+        const self = this;
+        const data = this.sendQueue.shift();
+        this.sending = true;
+        bridgeHttpRequest("POST", "/send", {id:this.id,data:data}, function(err) {
+            self.sending = false;
+            if (self.closed) return;
+            if (err) { self.emit("error",err); return; }
+            self.flushSend();
+        });
+    }
+    schedulePoll(delay) {
+        if (this.closed || !this.connected) return;
+        const self = this;
+        if (typeof setTimeout !== "function") {
+            this.emit("error","SignalRGB timer support unavailable in HTTP relay transport");
+            return;
+        }
+        this.pollTimer = setTimeout(function () {self.poll();}, delay);
+    }
+    poll() {
+        if (this.closed || !this.connected || this.polling) return;
+        const self = this;
+        this.polling = true;
+        bridgeHttpRequest("GET", "/poll?id=" + encodeURIComponent(this.id), null, function(err, response) {
+            self.polling = false;
+            if (self.closed) return;
+            if (err) {self.emit("error",err);return;}
+            const events = Array.isArray(response.events) ? response.events : [];
+            for (let i=0; i<events.length; i++) {
+                const event = events[i];
+                if (event.event === "message") self.emit("message",event.data || []);
+                else if (event.event === "error") self.emit("error",event.error || "Relay error");
+                else if (event.event === "close") {self.emit("close");return;}
+            }
+            self.schedulePoll(events.length ? 8 : 45);
+        });
+    }
+    close() {
+        if (this.closed) return;
+        this.closed = true;
+        this.connected = false;
+        if (this.pollTimer !== undefined && typeof clearTimeout === "function") clearTimeout(this.pollTimer);
+        this.sendQueue = [];
+        bridgeHttpRequest("POST", "/close", {id:this.id}, function() {});
+        this.emit("close");
+    }
+    disconnect() {this.close();}
+}
+const tcp = {createSocket: function () {return new BridgeHttpSocket();}};
+
 
 export function Name() { return "OpenRGB Bridge"; }
 export function Version() { return "2.0.2"; }
@@ -110,7 +228,7 @@ export function Render() {
 		const signature = makeFrameSignature(frame.colors);
 		const signatureKey = String(frame.openrgbIndex);
 
-		if (signature !== state.lastFrameSignatures[signatureKey]) {
+		if (client.isReady() && signature !== state.lastFrameSignatures[signatureKey]) {
 			client.updateLeds(frame.openrgbIndex, frame.colors);
 			state.lastFrameSignatures[signatureKey] = signature;
 		}
